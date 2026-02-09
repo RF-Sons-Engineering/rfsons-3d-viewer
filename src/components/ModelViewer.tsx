@@ -20,9 +20,23 @@ function GLBModel({ url }: { url: string }) {
 
 function STLModel({ url }: { url: string }) {
   const geometry = useLoader(STLLoader, url);
+  const meshRef = useRef<THREE.Mesh>(null);
+  
+  useEffect(() => {
+    if (geometry) {
+      geometry.computeVertexNormals();
+      geometry.center();
+    }
+  }, [geometry]);
+  
   return (
-    <mesh geometry={geometry}>
-      <meshStandardMaterial color="#888888" metalness={0.3} roughness={0.6} />
+    <mesh ref={meshRef} geometry={geometry}>
+      <meshStandardMaterial 
+        color="#888888" 
+        metalness={0.4} 
+        roughness={0.5}
+        side={THREE.DoubleSide}
+      />
     </mesh>
   );
 }
@@ -37,6 +51,7 @@ function OBJModel({ url }: { url: string }) {
           color: '#888888',
           metalness: 0.3,
           roughness: 0.6,
+          side: THREE.DoubleSide,
         });
       }
     });
@@ -57,39 +72,58 @@ function Model({ url, fileName }: { url: string; fileName: string }) {
     case 'obj':
       return <OBJModel url={url} />;
     default:
+      console.error('Unknown file type:', extension);
       return null;
   }
 }
 
-function AutoFit({ children }: { children: React.ReactNode }) {
+function CameraController() {
   const { camera, scene } = useThree();
-  const groupRef = useRef<THREE.Group>(null);
   
   useEffect(() => {
-    if (!groupRef.current) return;
-    
-    // Wait for model to load
+    // Wait for model to load, then fit camera
     const timer = setTimeout(() => {
-      const box = new THREE.Box3().setFromObject(groupRef.current!);
+      const box = new THREE.Box3().setFromObject(scene);
+      
+      if (box.isEmpty()) {
+        console.log('Scene is empty, waiting...');
+        return;
+      }
+      
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const distance = maxDim / (2 * Math.tan(fov / 2)) * 1.5;
+      console.log('Model size:', size);
+      console.log('Model center:', center);
       
-      camera.position.set(center.x + distance * 0.5, center.y + distance * 0.5, center.z + distance);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      
+      if (maxDim === 0) {
+        console.log('Model has zero size');
+        return;
+      }
+      
+      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+      const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+      
+      camera.position.set(
+        center.x + distance * 0.7,
+        center.y + distance * 0.5,
+        center.z + distance * 0.7
+      );
       camera.lookAt(center);
       camera.updateProjectionMatrix();
-    }, 100);
+      
+      console.log('Camera positioned at distance:', distance);
+    }, 500);
     
     return () => clearTimeout(timer);
   }, [camera, scene]);
   
-  return <group ref={groupRef}>{children}</group>;
+  return null;
 }
 
-function LoadingFallback() {
+function LoadingSpinner() {
   return (
     <mesh>
       <boxGeometry args={[1, 1, 1]} />
@@ -98,9 +132,19 @@ function LoadingFallback() {
   );
 }
 
+function ErrorBoundaryFallback() {
+  return (
+    <mesh>
+      <sphereGeometry args={[1, 16, 16]} />
+      <meshStandardMaterial color="#ff4444" wireframe />
+    </mesh>
+  );
+}
+
 export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const [showGrid, setShowGrid] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   const handleShare = async () => {
     await navigator.clipboard.writeText(window.location.href);
@@ -108,32 +152,39 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  console.log('ModelViewer loading:', { url, fileName });
+
   return (
     <div style={{ width: '100%', height: '100vh', background: '#1a1a1a', position: 'relative' }}>
-      <Canvas camera={{ fov: 50, position: [5, 5, 5] }}>
+      <Canvas 
+        camera={{ fov: 50, position: [10, 10, 10], near: 0.01, far: 100000 }}
+        onCreated={({ gl }) => {
+          gl.localClippingEnabled = true;
+        }}
+      >
         <color attach="background" args={['#1a1a1a']} />
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[10, 10, 5]} intensity={1} />
-        <directionalLight position={[-10, -10, -5]} intensity={0.3} />
+        <ambientLight intensity={0.6} />
+        <directionalLight position={[10, 10, 5]} intensity={1.2} />
+        <directionalLight position={[-10, -10, -5]} intensity={0.4} />
+        <pointLight position={[0, 10, 0]} intensity={0.5} />
         
-        <Suspense fallback={<LoadingFallback />}>
-          <AutoFit>
-            <Center>
-              <Model url={url} fileName={fileName} />
-            </Center>
-          </AutoFit>
+        <Suspense fallback={<LoadingSpinner />}>
+          <Center>
+            <Model url={url} fileName={fileName} />
+          </Center>
+          <CameraController />
         </Suspense>
         
         {showGrid && (
           <Grid
-            args={[20, 20]}
+            args={[100, 100]}
             cellSize={1}
             cellThickness={0.5}
             cellColor="#333"
-            sectionSize={5}
+            sectionSize={10}
             sectionThickness={1}
             sectionColor="#555"
-            fadeDistance={30}
+            fadeDistance={100}
             fadeStrength={1}
             infiniteGrid
           />
@@ -143,11 +194,28 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           enableDamping
           dampingFactor={0.1}
           rotateSpeed={0.5}
-          zoomSpeed={0.8}
+          zoomSpeed={1.2}
           panSpeed={0.8}
+          minDistance={0.1}
+          maxDistance={10000}
         />
         <Environment preset="studio" />
       </Canvas>
+      
+      {error && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(255,0,0,0.8)',
+          padding: 20,
+          borderRadius: 8,
+          color: 'white',
+        }}>
+          Error: {error}
+        </div>
+      )}
       
       {/* Controls */}
       <div style={{
@@ -205,6 +273,17 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
       >
         ← Back
       </a>
+      
+      {/* Debug info */}
+      <div style={{
+        position: 'absolute',
+        bottom: 20,
+        left: 20,
+        fontSize: 12,
+        color: '#666',
+      }}>
+        {fileName}
+      </div>
     </div>
   );
 }
