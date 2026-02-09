@@ -15,26 +15,34 @@ interface ModelViewerProps {
 
 interface TreeNode {
   id: string;
+  uuid: string;
   name: string;
   type: string;
   visible: boolean;
   children: TreeNode[];
-  object: THREE.Object3D;
 }
+
+// Store object references separately to avoid circular refs in state
+const objectMap = new Map<string, THREE.Object3D>();
 
 // Build tree from Three.js scene
 function buildTree(object: THREE.Object3D, prefix = ''): TreeNode {
   const id = prefix || object.uuid;
+  objectMap.set(id, object);
   return {
     id,
+    uuid: object.uuid,
     name: object.name || object.type,
     type: object.type,
     visible: object.visible,
     children: object.children
       .filter(child => child.type !== 'GridHelper' && !child.type.includes('Light') && child.type !== 'Environment')
       .map((child, i) => buildTree(child, `${id}-${i}`)),
-    object,
   };
+}
+
+function getObject(id: string): THREE.Object3D | undefined {
+  return objectMap.get(id);
 }
 
 function GLBModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THREE.Object3D) => void }) {
@@ -50,6 +58,7 @@ function GLBModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THRE
 function STLModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THREE.Object3D) => void }) {
   const geometry = useLoader(STLLoader, url);
   const meshRef = useRef<THREE.Mesh>(null);
+  const calledRef = useRef(false);
   
   useEffect(() => {
     if (geometry) {
@@ -59,11 +68,17 @@ function STLModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THRE
   }, [geometry]);
   
   useEffect(() => {
-    if (meshRef.current) {
+    if (meshRef.current && !calledRef.current) {
+      calledRef.current = true;
       meshRef.current.name = 'STL Model';
-      onSceneReady(meshRef.current);
+      // Delay to ensure mesh is fully mounted
+      setTimeout(() => {
+        if (meshRef.current) {
+          onSceneReady(meshRef.current);
+        }
+      }, 100);
     }
-  }, [onSceneReady]);
+  }, [geometry, onSceneReady]);
   
   return (
     <mesh ref={meshRef} geometry={geometry} name="STL Model">
@@ -354,9 +369,12 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   }, []);
 
   const handleToggleVisibility = useCallback((node: TreeNode) => {
-    node.object.visible = !node.object.visible;
-    // Force tree update
-    setTree(prev => prev ? { ...prev } : null);
+    const obj = getObject(node.id);
+    if (obj) {
+      obj.visible = !obj.visible;
+      // Force tree update
+      setTree(prev => prev ? { ...prev } : null);
+    }
   }, []);
 
   const handleSelect = useCallback((node: TreeNode) => {
