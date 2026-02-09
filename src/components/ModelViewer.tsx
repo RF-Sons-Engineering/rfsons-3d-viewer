@@ -129,42 +129,52 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
-function CameraController({ onZoomExtentsReady }: { onZoomExtentsReady?: (fn: () => void) => void }) {
+// Global ref for zoom extents function - avoids stale closure issues
+let globalZoomExtents: (() => void) | null = null;
+
+function CameraController() {
   const { camera, scene } = useThree();
   
-  const zoomExtents = useCallback(() => {
-    const box = new THREE.Box3().setFromObject(scene);
-    if (box.isEmpty()) return;
-    
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    if (maxDim === 0) return;
-    
-    const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-    const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
-    
-    camera.position.set(
-      center.x + distance * 0.7,
-      center.y + distance * 0.5,
-      center.z + distance * 0.7
-    );
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-  }, [camera, scene]);
+  // Store refs to always have latest values
+  const cameraRef = useRef(camera);
+  const sceneRef = useRef(scene);
+  cameraRef.current = camera;
+  sceneRef.current = scene;
   
-  // Auto zoom on mount
   useEffect(() => {
-    const timer = setTimeout(zoomExtents, 500);
-    return () => clearTimeout(timer);
-  }, [zoomExtents]);
-  
-  // Expose zoom function to parent
-  useEffect(() => {
-    if (onZoomExtentsReady) {
-      onZoomExtentsReady(zoomExtents);
-    }
-  }, [zoomExtents, onZoomExtentsReady]);
+    // Define zoom function that uses refs for latest values
+    globalZoomExtents = () => {
+      const cam = cameraRef.current;
+      const scn = sceneRef.current;
+      
+      const box = new THREE.Box3().setFromObject(scn);
+      if (box.isEmpty()) return;
+      
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      if (maxDim === 0) return;
+      
+      const fov = (cam as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+      const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+      
+      cam.position.set(
+        center.x + distance * 0.7,
+        center.y + distance * 0.5,
+        center.z + distance * 0.7
+      );
+      cam.lookAt(center);
+      cam.updateProjectionMatrix();
+    };
+    
+    // Auto zoom on mount
+    const timer = setTimeout(() => globalZoomExtents?.(), 500);
+    
+    return () => {
+      clearTimeout(timer);
+      globalZoomExtents = null;
+    };
+  }, []);
   
   return null;
 }
@@ -365,7 +375,6 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const zoomExtentsRef = useRef<(() => void) | null>(null);
   
   const handleShare = async () => {
     await navigator.clipboard.writeText(window.location.href);
@@ -409,7 +418,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           <Center>
             <Model url={url} fileName={fileName} onSceneReady={handleSceneReady} />
           </Center>
-          <CameraController onZoomExtentsReady={(fn) => { zoomExtentsRef.current = fn; }} />
+          <CameraController />
         </Suspense>
         
         {showGrid && (
@@ -487,7 +496,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           Grid
         </button>
         <button
-          onClick={() => zoomExtentsRef.current?.()}
+          onClick={() => globalZoomExtents?.()}
           style={{
             padding: '10px 16px',
             background: '#333',
