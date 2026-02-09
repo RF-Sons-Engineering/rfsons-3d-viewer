@@ -142,21 +142,42 @@ function CameraController() {
   sceneRef.current = scene;
   
   useEffect(() => {
+    console.log('[ZoomExtents] Setting up globalZoomExtents function');
+    
     // Define zoom function that uses refs for latest values
     globalZoomExtents = () => {
+      console.log('[ZoomExtents] Function called!');
       const cam = cameraRef.current;
       const scn = sceneRef.current;
       
+      console.log('[ZoomExtents] Camera:', cam);
+      console.log('[ZoomExtents] Scene:', scn);
+      
       const box = new THREE.Box3().setFromObject(scn);
-      if (box.isEmpty()) return;
+      console.log('[ZoomExtents] BoundingBox isEmpty:', box.isEmpty());
+      
+      if (box.isEmpty()) {
+        console.log('[ZoomExtents] Box is empty, returning');
+        return;
+      }
       
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
-      if (maxDim === 0) return;
+      
+      console.log('[ZoomExtents] Size:', size);
+      console.log('[ZoomExtents] Center:', center);
+      console.log('[ZoomExtents] MaxDim:', maxDim);
+      
+      if (maxDim === 0) {
+        console.log('[ZoomExtents] MaxDim is 0, returning');
+        return;
+      }
       
       const fov = (cam as THREE.PerspectiveCamera).fov * (Math.PI / 180);
       const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+      
+      console.log('[ZoomExtents] Distance:', distance);
       
       cam.position.set(
         center.x + distance * 0.7,
@@ -165,9 +186,12 @@ function CameraController() {
       );
       cam.lookAt(center);
       cam.updateProjectionMatrix();
+      
+      console.log('[ZoomExtents] Camera repositioned to:', cam.position);
     };
     
     // Auto zoom on mount
+    console.log('[ZoomExtents] Setting up auto-zoom timer');
     const timer = setTimeout(() => globalZoomExtents?.(), 500);
     
     return () => {
@@ -496,7 +520,10 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           Grid
         </button>
         <button
-          onClick={() => globalZoomExtents?.()}
+          onClick={() => {
+            console.log('[Fit Button] Clicked! globalZoomExtents:', globalZoomExtents);
+            globalZoomExtents?.();
+          }}
           style={{
             padding: '10px 16px',
             background: '#333',
