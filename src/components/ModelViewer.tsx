@@ -114,32 +114,47 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
+// Store zoom function globally so button and onSceneReady can trigger it
+declare global {
+  interface Window {
+    triggerZoomExtents?: () => void;
+  }
+}
+
 function CameraController() {
   const { camera, scene } = useThree();
   
   useEffect(() => {
-    const timer = setTimeout(() => {
-      const box = new THREE.Box3().setFromObject(scene);
-      if (box.isEmpty()) return;
-      
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      if (maxDim === 0) return;
-      
-      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
-      
-      camera.position.set(
-        center.x + distance * 0.7,
-        center.y + distance * 0.5,
-        center.z + distance * 0.7
-      );
-      camera.lookAt(center);
-      camera.updateProjectionMatrix();
-    }, 500);
+    const doZoom = () => {
+      // Small delay to ensure geometry transforms are applied
+      setTimeout(() => {
+        const box = new THREE.Box3().setFromObject(scene);
+        if (box.isEmpty()) return;
+        
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        if (maxDim === 0) return;
+        
+        const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+        const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+        
+        camera.position.set(
+          center.x + distance * 0.7,
+          center.y + distance * 0.5,
+          center.z + distance * 0.7
+        );
+        camera.lookAt(center);
+        camera.updateProjectionMatrix();
+      }, 50);
+    };
     
-    return () => clearTimeout(timer);
+    // Expose zoom function globally
+    window.triggerZoomExtents = doZoom;
+    
+    return () => {
+      delete window.triggerZoomExtents;
+    };
   }, [camera, scene]);
   
   return null;
@@ -351,6 +366,8 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const handleSceneReady = useCallback((object: THREE.Object3D) => {
     const treeData = buildTree(object);
     setTree(treeData);
+    // Trigger zoom after model is ready
+    window.triggerZoomExtents?.();
   }, []);
 
   const handleToggleVisibility = useCallback((node: TreeNode) => {
@@ -457,6 +474,21 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           }}
         >
           Grid
+        </button>
+        <button
+          onClick={() => window.triggerZoomExtents?.()}
+          style={{
+            padding: '10px 16px',
+            background: '#333',
+            border: 'none',
+            borderRadius: 8,
+            color: 'white',
+            cursor: 'pointer',
+            fontSize: 14,
+          }}
+          title="Fit model in view"
+        >
+          ⊡ Fit
         </button>
         <button
           onClick={handleShare}
