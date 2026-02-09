@@ -253,6 +253,24 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
         >
           {copied ? 'Copied!' : 'Share'}
         </button>
+        <a
+          href={url}
+          download={fileName}
+          style={{
+            padding: '10px 16px',
+            background: '#333',
+            border: 'none',
+            borderRadius: 8,
+            color: 'white',
+            textDecoration: 'none',
+            fontSize: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          ↓ Download
+        </a>
       </div>
       
       {/* Back link */}
