@@ -15,34 +15,26 @@ interface ModelViewerProps {
 
 interface TreeNode {
   id: string;
-  uuid: string;
   name: string;
   type: string;
   visible: boolean;
   children: TreeNode[];
+  object: THREE.Object3D;
 }
-
-// Store object references separately to avoid circular refs in state
-const objectMap = new Map<string, THREE.Object3D>();
 
 // Build tree from Three.js scene
 function buildTree(object: THREE.Object3D, prefix = ''): TreeNode {
   const id = prefix || object.uuid;
-  objectMap.set(id, object);
   return {
     id,
-    uuid: object.uuid,
     name: object.name || object.type,
     type: object.type,
     visible: object.visible,
     children: object.children
       .filter(child => child.type !== 'GridHelper' && !child.type.includes('Light') && child.type !== 'Environment')
       .map((child, i) => buildTree(child, `${id}-${i}`)),
+    object,
   };
-}
-
-function getObject(id: string): THREE.Object3D | undefined {
-  return objectMap.get(id);
 }
 
 function GLBModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THREE.Object3D) => void }) {
@@ -58,7 +50,6 @@ function GLBModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THRE
 function STLModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THREE.Object3D) => void }) {
   const geometry = useLoader(STLLoader, url);
   const meshRef = useRef<THREE.Mesh>(null);
-  const calledRef = useRef(false);
   
   useEffect(() => {
     if (geometry) {
@@ -68,17 +59,11 @@ function STLModel({ url, onSceneReady }: { url: string; onSceneReady: (obj: THRE
   }, [geometry]);
   
   useEffect(() => {
-    if (meshRef.current && !calledRef.current) {
-      calledRef.current = true;
+    if (meshRef.current) {
       meshRef.current.name = 'STL Model';
-      // Delay to ensure mesh is fully mounted
-      setTimeout(() => {
-        if (meshRef.current) {
-          onSceneReady(meshRef.current);
-        }
-      }, 100);
+      onSceneReady(meshRef.current);
     }
-  }, [geometry, onSceneReady]);
+  }, [onSceneReady]);
   
   return (
     <mesh ref={meshRef} geometry={geometry} name="STL Model">
@@ -129,76 +114,42 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
-// Global ref for zoom extents function - avoids stale closure issues
-let globalZoomExtents: (() => void) | null = null;
-
 function CameraController() {
   const { camera, scene } = useThree();
   
-  // Store refs to always have latest values
-  const cameraRef = useRef(camera);
-  const sceneRef = useRef(scene);
-  cameraRef.current = camera;
-  sceneRef.current = scene;
+  const zoomExtents = useCallback(() => {
+    const box = new THREE.Box3().setFromObject(scene);
+    if (box.isEmpty()) return;
+    
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim === 0) return;
+    
+    const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+    const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+    
+    camera.position.set(
+      center.x + distance * 0.7,
+      center.y + distance * 0.5,
+      center.z + distance * 0.7
+    );
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+  }, [camera, scene]);
   
+  // Auto zoom on mount
   useEffect(() => {
-    console.log('[ZoomExtents] Setting up globalZoomExtents function');
-    
-    // Define zoom function that uses refs for latest values
-    globalZoomExtents = () => {
-      console.log('[ZoomExtents] Function called!');
-      const cam = cameraRef.current;
-      const scn = sceneRef.current;
-      
-      console.log('[ZoomExtents] Camera:', cam);
-      console.log('[ZoomExtents] Scene:', scn);
-      
-      const box = new THREE.Box3().setFromObject(scn);
-      console.log('[ZoomExtents] BoundingBox isEmpty:', box.isEmpty());
-      
-      if (box.isEmpty()) {
-        console.log('[ZoomExtents] Box is empty, returning');
-        return;
-      }
-      
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      
-      console.log('[ZoomExtents] Size:', size);
-      console.log('[ZoomExtents] Center:', center);
-      console.log('[ZoomExtents] MaxDim:', maxDim);
-      
-      if (maxDim === 0) {
-        console.log('[ZoomExtents] MaxDim is 0, returning');
-        return;
-      }
-      
-      const fov = (cam as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
-      
-      console.log('[ZoomExtents] Distance:', distance);
-      
-      cam.position.set(
-        center.x + distance * 0.7,
-        center.y + distance * 0.5,
-        center.z + distance * 0.7
-      );
-      cam.lookAt(center);
-      cam.updateProjectionMatrix();
-      
-      console.log('[ZoomExtents] Camera repositioned to:', cam.position);
-    };
-    
-    // Auto zoom on mount
-    console.log('[ZoomExtents] Setting up auto-zoom timer');
-    const timer = setTimeout(() => globalZoomExtents?.(), 500);
-    
-    return () => {
-      clearTimeout(timer);
-      globalZoomExtents = null;
-    };
-  }, []);
+    const timer = setTimeout(zoomExtents, 500);
+    return () => clearTimeout(timer);
+  }, [zoomExtents]);
+  
+  // Listen for zoom extents event from button
+  useEffect(() => {
+    const handleZoomExtents = () => zoomExtents();
+    window.addEventListener('zoomExtents', handleZoomExtents);
+    return () => window.removeEventListener('zoomExtents', handleZoomExtents);
+  }, [zoomExtents]);
   
   return null;
 }
@@ -412,12 +363,9 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   }, []);
 
   const handleToggleVisibility = useCallback((node: TreeNode) => {
-    const obj = getObject(node.id);
-    if (obj) {
-      obj.visible = !obj.visible;
-      // Force tree update
-      setTree(prev => prev ? { ...prev } : null);
-    }
+    node.object.visible = !node.object.visible;
+    // Force tree update
+    setTree(prev => prev ? { ...prev } : null);
   }, []);
 
   const handleSelect = useCallback((node: TreeNode) => {
@@ -520,10 +468,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           Grid
         </button>
         <button
-          onClick={() => {
-            console.log('[Fit Button] Clicked! globalZoomExtents:', globalZoomExtents);
-            globalZoomExtents?.();
-          }}
+          onClick={() => window.dispatchEvent(new Event('zoomExtents'))}
           style={{
             padding: '10px 16px',
             background: '#333',
