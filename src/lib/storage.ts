@@ -3,46 +3,76 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Model, StorageInfo } from '@/types';
 
 const STORAGE_LIMIT = 1_000_000_000; // 1GB in bytes
-const METADATA_PREFIX = 'metadata/';
 const MODELS_PREFIX = 'models/';
+const METADATA_FILE = 'metadata.json';
 
-// In-memory cache for metadata (Vercel Blob doesn't have native metadata)
-// In production, you'd use a database like Vercel KV or Postgres
-let modelsCache: Model[] | null = null;
+interface MetadataStore {
+  models: Model[];
+  updatedAt: string;
+}
+
+async function getMetadataUrl(): Promise<string | null> {
+  try {
+    const { blobs } = await list({ prefix: METADATA_FILE.split('.')[0] });
+    const metadataBlob = blobs.find(b => b.pathname === METADATA_FILE || b.pathname.startsWith('metadata'));
+    return metadataBlob?.url || null;
+  } catch (e) {
+    console.error('Failed to list blobs:', e);
+    return null;
+  }
+}
 
 async function loadMetadata(): Promise<Model[]> {
-  if (modelsCache) return modelsCache;
-  
   try {
-    const { blobs } = await list({ prefix: METADATA_PREFIX });
-    const models: Model[] = [];
-    
-    for (const blob of blobs) {
-      try {
-        const response = await fetch(blob.url);
-        const metadata = await response.json();
-        models.push(metadata);
-      } catch (e) {
-        console.error(`Failed to load metadata for ${blob.pathname}`, e);
-      }
+    const url = await getMetadataUrl();
+    if (!url) {
+      console.log('No metadata file found, starting fresh');
+      return [];
     }
     
-    modelsCache = models.sort((a, b) => 
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-    return modelsCache;
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) {
+      console.log('Failed to fetch metadata:', response.status);
+      return [];
+    }
+    
+    const data: MetadataStore = await response.json();
+    return data.models || [];
   } catch (e) {
-    console.error('Failed to load metadata', e);
+    console.log('Failed to load metadata:', e);
     return [];
   }
 }
 
-function invalidateCache() {
-  modelsCache = null;
+async function saveMetadata(models: Model[]): Promise<void> {
+  // Delete old metadata file first
+  const oldUrl = await getMetadataUrl();
+  if (oldUrl) {
+    try {
+      await del(oldUrl);
+    } catch (e) {
+      console.log('Failed to delete old metadata:', e);
+    }
+  }
+  
+  const store: MetadataStore = {
+    models,
+    updatedAt: new Date().toISOString(),
+  };
+  
+  await put(METADATA_FILE, JSON.stringify(store, null, 2), {
+    access: 'public',
+    contentType: 'application/json',
+    addRandomSuffix: false,
+  });
 }
 
 export async function getModels(): Promise<Model[]> {
-  return loadMetadata();
+  const models = await loadMetadata();
+  // Sort by createdAt (oldest first for FIFO deletion)
+  return models.sort((a, b) => 
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
 }
 
 export async function getModel(id: string): Promise<Model | null> {
@@ -63,17 +93,18 @@ export async function getStorageInfo(): Promise<StorageInfo> {
 }
 
 export async function deleteModel(id: string): Promise<boolean> {
-  const model = await getModel(id);
+  const models = await loadMetadata();
+  const model = models.find(m => m.id === id);
   if (!model) return false;
   
   try {
     // Delete the model file
     await del(model.fileUrl);
     
-    // Delete the metadata
-    await del(`${METADATA_PREFIX}${id}.json`);
+    // Update metadata
+    const updatedModels = models.filter(m => m.id !== id);
+    await saveMetadata(updatedModels);
     
-    invalidateCache();
     return true;
   } catch (e) {
     console.error(`Failed to delete model ${id}`, e);
@@ -82,26 +113,33 @@ export async function deleteModel(id: string): Promise<boolean> {
 }
 
 async function freeSpace(requiredBytes: number): Promise<void> {
-  const models = await loadMetadata();
+  let models = await loadMetadata();
   let totalSize = models.reduce((sum, m) => sum + m.size, 0);
   
-  // Delete oldest models until we have enough space
+  // Sort by oldest first
+  models.sort((a, b) => 
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+  
+  const toDelete: string[] = [];
+  
   for (const model of models) {
     if (totalSize + requiredBytes <= STORAGE_LIMIT) break;
     
-    console.log(`Deleting oldest model to free space: ${model.name} (${model.size} bytes)`);
-    await deleteModel(model.id);
+    console.log(`Marking for deletion: ${model.name} (${model.size} bytes)`);
+    toDelete.push(model.id);
     totalSize -= model.size;
   }
   
-  // Reload cache after deletions
-  invalidateCache();
+  // Delete models
+  for (const id of toDelete) {
+    await deleteModel(id);
+  }
 }
 
 export async function uploadModel(file: File, name: string): Promise<Model> {
   const fileSize = file.size;
   
-  // Check if file itself is too large
   if (fileSize > STORAGE_LIMIT) {
     throw new Error(`File too large. Maximum size is ${STORAGE_LIMIT / 1_000_000}MB`);
   }
@@ -123,7 +161,7 @@ export async function uploadModel(file: File, name: string): Promise<Model> {
     contentType: file.type || 'application/octet-stream',
   });
   
-  // Create metadata
+  // Create model entry
   const model: Model = {
     id,
     name,
@@ -134,14 +172,11 @@ export async function uploadModel(file: File, name: string): Promise<Model> {
     viewUrl: `/view/${id}`,
   };
   
-  // Save metadata as JSON blob
-  const metadataBlob = new Blob([JSON.stringify(model)], { type: 'application/json' });
-  await put(`${METADATA_PREFIX}${id}.json`, metadataBlob, {
-    access: 'public',
-    contentType: 'application/json',
-  });
+  // Update metadata
+  const models = await loadMetadata();
+  models.push(model);
+  await saveMetadata(models);
   
-  invalidateCache();
   return model;
 }
 
