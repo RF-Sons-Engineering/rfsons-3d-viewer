@@ -35,7 +35,7 @@ function STLModel({ url }: { url: string }) {
         color="#888888" 
         metalness={0.4} 
         roughness={0.5}
-        side={THREE.DoubleSide}
+        side={THREE.FrontSide}
       />
     </mesh>
   );
@@ -51,7 +51,7 @@ function OBJModel({ url }: { url: string }) {
           color: '#888888',
           metalness: 0.3,
           roughness: 0.6,
-          side: THREE.DoubleSide,
+          side: THREE.FrontSide,
         });
       }
     });
