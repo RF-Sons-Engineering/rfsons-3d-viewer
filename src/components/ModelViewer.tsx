@@ -129,33 +129,42 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
-function CameraController() {
+function CameraController({ onZoomExtentsReady }: { onZoomExtentsReady?: (fn: () => void) => void }) {
   const { camera, scene } = useThree();
   
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const box = new THREE.Box3().setFromObject(scene);
-      if (box.isEmpty()) return;
-      
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      if (maxDim === 0) return;
-      
-      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
-      
-      camera.position.set(
-        center.x + distance * 0.7,
-        center.y + distance * 0.5,
-        center.z + distance * 0.7
-      );
-      camera.lookAt(center);
-      camera.updateProjectionMatrix();
-    }, 500);
+  const zoomExtents = useCallback(() => {
+    const box = new THREE.Box3().setFromObject(scene);
+    if (box.isEmpty()) return;
     
-    return () => clearTimeout(timer);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim === 0) return;
+    
+    const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+    const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+    
+    camera.position.set(
+      center.x + distance * 0.7,
+      center.y + distance * 0.5,
+      center.z + distance * 0.7
+    );
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
   }, [camera, scene]);
+  
+  // Auto zoom on mount
+  useEffect(() => {
+    const timer = setTimeout(zoomExtents, 500);
+    return () => clearTimeout(timer);
+  }, [zoomExtents]);
+  
+  // Expose zoom function to parent
+  useEffect(() => {
+    if (onZoomExtentsReady) {
+      onZoomExtentsReady(zoomExtents);
+    }
+  }, [zoomExtents, onZoomExtentsReady]);
   
   return null;
 }
@@ -356,6 +365,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const zoomExtentsRef = useRef<(() => void) | null>(null);
   
   const handleShare = async () => {
     await navigator.clipboard.writeText(window.location.href);
@@ -399,7 +409,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           <Center>
             <Model url={url} fileName={fileName} onSceneReady={handleSceneReady} />
           </Center>
-          <CameraController />
+          <CameraController onZoomExtentsReady={(fn) => { zoomExtentsRef.current = fn; }} />
         </Suspense>
         
         {showGrid && (
@@ -475,6 +485,21 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           }}
         >
           Grid
+        </button>
+        <button
+          onClick={() => zoomExtentsRef.current?.()}
+          style={{
+            padding: '10px 16px',
+            background: '#333',
+            border: 'none',
+            borderRadius: 8,
+            color: 'white',
+            cursor: 'pointer',
+            fontSize: 14,
+          }}
+          title="Fit model in view"
+        >
+          ⊡ Fit
         </button>
         <button
           onClick={handleShare}
