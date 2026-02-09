@@ -114,48 +114,86 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
-// Store zoom function globally so button and onSceneReady can trigger it
+// Store model reference globally for Fit button
 declare global {
   interface Window {
     triggerZoomExtents?: () => void;
+    modelObject?: THREE.Object3D;
   }
 }
 
 function CameraController() {
-  const { camera, scene } = useThree();
+  const { camera } = useThree();
+  const hasZoomedRef = useRef(false);
   
-  useEffect(() => {
-    const doZoom = () => {
-      // Small delay to ensure geometry transforms are applied
-      setTimeout(() => {
-        const box = new THREE.Box3().setFromObject(scene);
-        if (box.isEmpty()) return;
-        
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        if (maxDim === 0) return;
-        
-        const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-        const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
-        
-        camera.position.set(
-          center.x + distance * 0.7,
-          center.y + distance * 0.5,
-          center.z + distance * 0.7
-        );
-        camera.lookAt(center);
-        camera.updateProjectionMatrix();
-      }, 50);
-    };
+  const doZoom = useCallback(() => {
+    const model = window.modelObject;
+    if (!model) return false;
     
-    // Expose zoom function globally
+    const box = new THREE.Box3().setFromObject(model);
+    if (box.isEmpty()) return false;
+    
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim === 0) return false;
+    
+    const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+    const distance = (maxDim / 2) / Math.tan(fov / 2) * 2.5;
+    
+    camera.position.set(
+      center.x + distance * 0.7,
+      center.y + distance * 0.5,
+      center.z + distance * 0.7
+    );
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+    return true;
+  }, [camera]);
+  
+  // Expose zoom function globally and listen for fit-view events
+  useEffect(() => {
     window.triggerZoomExtents = doZoom;
     
-    return () => {
+    const handleFitView = () => doZoom();
+    window.addEventListener('fit-view', handleFitView);
+    
+    return () => { 
       delete window.triggerZoomExtents;
+      window.removeEventListener('fit-view', handleFitView);
     };
-  }, [camera, scene]);
+  }, [doZoom]);
+  
+  // Auto-zoom once when model is set
+  useEffect(() => {
+    if (hasZoomedRef.current) return;
+    
+    const checkAndZoom = () => {
+      if (window.modelObject) {
+        // Model is set - wait a bit for geometry transforms, then zoom
+        setTimeout(() => {
+          if (!hasZoomedRef.current) {
+            hasZoomedRef.current = true;
+            doZoom();
+          }
+        }, 100);
+        return true;
+      }
+      return false;
+    };
+    
+    // Check immediately
+    if (checkAndZoom()) return;
+    
+    // Poll every 100ms until model is set
+    const interval = setInterval(() => {
+      if (checkAndZoom()) {
+        clearInterval(interval);
+      }
+    }, 100);
+    
+    return () => clearInterval(interval);
+  }, [doZoom]);
   
   return null;
 }
@@ -366,8 +404,8 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const handleSceneReady = useCallback((object: THREE.Object3D) => {
     const treeData = buildTree(object);
     setTree(treeData);
-    // Trigger zoom after model is ready
-    window.triggerZoomExtents?.();
+    // Store model reference globally for CameraController
+    window.modelObject = object;
   }, []);
 
   const handleToggleVisibility = useCallback((node: TreeNode) => {
@@ -476,7 +514,7 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
           Grid
         </button>
         <button
-          onClick={() => window.triggerZoomExtents?.()}
+          onClick={() => window.dispatchEvent(new CustomEvent('fit-view'))}
           style={{
             padding: '10px 16px',
             background: '#333',
