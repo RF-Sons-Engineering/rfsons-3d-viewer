@@ -114,23 +114,25 @@ function Model({ url, fileName, onSceneReady }: { url: string; fileName: string;
   }
 }
 
-// Store model reference globally for Fit button
+// Global zoom function for Fit button
 declare global {
   interface Window {
     triggerZoomExtents?: () => void;
-    modelObject?: THREE.Object3D;
   }
 }
 
 function CameraController() {
-  const { camera } = useThree();
+  const { camera, scene } = useThree();
   const hasZoomedRef = useRef(false);
   
   const doZoom = useCallback(() => {
-    const model = window.modelObject;
-    if (!model) return false;
-    
-    const box = new THREE.Box3().setFromObject(model);
+    // Calculate bounding box from meshes only, not grid/lights
+    const box = new THREE.Box3();
+    scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh && obj.name !== 'Grid') {
+        box.expandByObject(obj);
+      }
+    });
     if (box.isEmpty()) return false;
     
     const size = box.getSize(new THREE.Vector3());
@@ -149,7 +151,7 @@ function CameraController() {
     camera.lookAt(center);
     camera.updateProjectionMatrix();
     return true;
-  }, [camera]);
+  }, [camera, scene]);
   
   // Expose zoom function globally and listen for fit-view events
   useEffect(() => {
@@ -164,19 +166,27 @@ function CameraController() {
     };
   }, [doZoom]);
   
-  // Auto-zoom once when model is set
+  // Auto-zoom once when scene has meshes
   useEffect(() => {
     if (hasZoomedRef.current) return;
     
+    const hasMeshes = () => {
+      let found = false;
+      scene.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh && obj.name !== 'Grid') found = true;
+      });
+      return found;
+    };
+    
     const checkAndZoom = () => {
-      if (window.modelObject) {
-        // Model is set - wait a bit for geometry transforms, then zoom
+      if (hasMeshes()) {
+        // Scene has meshes - wait a bit for geometry transforms, then zoom
         setTimeout(() => {
           if (!hasZoomedRef.current) {
             hasZoomedRef.current = true;
             doZoom();
           }
-        }, 100);
+        }, 150);
         return true;
       }
       return false;
@@ -185,7 +195,7 @@ function CameraController() {
     // Check immediately
     if (checkAndZoom()) return;
     
-    // Poll every 100ms until model is set
+    // Poll every 100ms until scene has meshes
     const interval = setInterval(() => {
       if (checkAndZoom()) {
         clearInterval(interval);
@@ -193,7 +203,7 @@ function CameraController() {
     }, 100);
     
     return () => clearInterval(interval);
-  }, [doZoom]);
+  }, [scene, doZoom]);
   
   return null;
 }
@@ -404,8 +414,6 @@ export default function ModelViewer({ url, fileName }: ModelViewerProps) {
   const handleSceneReady = useCallback((object: THREE.Object3D) => {
     const treeData = buildTree(object);
     setTree(treeData);
-    // Store model reference globally for CameraController
-    window.modelObject = object;
   }, []);
 
   const handleToggleVisibility = useCallback((node: TreeNode) => {
